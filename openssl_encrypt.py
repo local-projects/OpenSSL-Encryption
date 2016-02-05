@@ -5,9 +5,14 @@ import sys
 import base64
 import struct
 import subprocess
+from zipfile import ZipFile
 from pyasn1.type import univ
 from pyasn1.codec.der import encoder as der_encoder
-from tempfile import NamedTemporaryFile
+from tempfile import NamedTemporaryFile, TemporaryFile
+
+
+ENCRYPTED_KEY_NAME    = "key.enc"
+ENCRYPTED_FILE_SUFFIX = ".encrypted"
 
 
 def execute_command(command):
@@ -76,7 +81,7 @@ def decrypt(public, infile):
     Decrypts the input file using the public information
     :param public: String of OpenSSL public key information
     :param infile: Filename of the file to encrypt
-    :return:
+    :return: A temporary file containing the zip info
     """
     keyfields = public.split()
     if len(keyfields) == 3:
@@ -105,16 +110,24 @@ def decrypt(public, infile):
     encrypt_key.write(execute_command("openssl rsautl -encrypt -inkey %s -pubin -in %s" % (pem.name, key.name)))
     encrypt_key.close()
 
-    # Cleanup unneeded files
-    os.remove(pem.name)
-    os.remove(key.name)
-
     # Encrypt the actual file
     encrypt_file = NamedTemporaryFile(delete=False)
     encrypt_file.write(execute_command("openssl enc -aes-256-cbc -salt -in %s -pass file:%s" % (infile, encrypt_key.name)))
     encrypt_file.close()
 
     # Bundle all the needed assets into a zip
+    zip_file = TemporaryFile()
+    with ZipFile(zip_file) as zf:
+        zf.write(encrypt_key, ENCRYPTED_KEY_NAME)
+        zf.write(encrypt_file, infile+ENCRYPTED_FILE_SUFFIX)
+
+    # Cleanup temp files
+    os.remove(pem.name)
+    os.remove(key.name)
+    os.remove(encrypt_file)
+    os.remove(encrypt_key)
+
+    return zip_file
 
 if __name__ == "__main__":
 
