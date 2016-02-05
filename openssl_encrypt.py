@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 # This whole script taken heavily from https://gist.github.com/thwarted/1024558#file-sshpub-to-rsa
 
 import os
@@ -10,9 +12,14 @@ from pyasn1.type import univ
 from pyasn1.codec.der import encoder as der_encoder
 from tempfile import NamedTemporaryFile, TemporaryFile
 
-
-ENCRYPTED_KEY_NAME    = "key.enc"
+ENCRYPTED_KEY_NAME = "key.enc"
 ENCRYPTED_FILE_SUFFIX = ".encrypted"
+
+
+# We're working under the assumption that we will only be encrypting relatively small plain text info,
+# so in the interest of ease of use we're going to try something kind of stupid and embed the binary data *within*
+#  the decrpyt script, Which is itself a part of the encrypt script. Let's see how it goes...
+EMBEDDED_BINARY_DATA = None
 
 
 def execute_command(command):
@@ -76,14 +83,14 @@ def openssl_pub_to_pem(keydata):
     return value
 
 
-def decrypt(public, infile):
+def encrypt(public_info, infile):
     """
     Decrypts the input file using the public information
-    :param public: String of OpenSSL public key information
+    :param public_info: String of OpenSSL public key information
     :param infile: Filename of the file to encrypt
     :return: A temporary file containing the zip info
     """
-    keyfields = public.split()
+    keyfields = public_info.split()
     if len(keyfields) == 3:
         # We don't actually need nor want the comment
         keyfields.pop()
@@ -116,41 +123,50 @@ def decrypt(public, infile):
     encrypt_file.close()
 
     # Bundle all the needed assets into a zip
-    zip_file = TemporaryFile()
-    with ZipFile(zip_file) as zf:
-        zf.write(encrypt_key, ENCRYPTED_KEY_NAME)
-        zf.write(encrypt_file, infile+ENCRYPTED_FILE_SUFFIX)
+    zip_file = TemporaryFile(mode='r+')
+    with ZipFile(zip_file, mode='w') as zf:
+        zf.write(encrypt_key.name, ENCRYPTED_KEY_NAME)
+        zf.write(encrypt_file.name, infile+ENCRYPTED_FILE_SUFFIX)
 
     # Cleanup temp files
     os.remove(pem.name)
     os.remove(key.name)
-    os.remove(encrypt_file)
-    os.remove(encrypt_key)
+    os.remove(encrypt_file.name)
+    os.remove(encrypt_key.name)
 
     return zip_file
 
 if __name__ == "__main__":
 
-    arg_length = len(sys.argv) - 1  # Subtract 1 for the implicit first argument, the programs name
-    if arg_length > 3 or arg_length < 2:
-        sys.stderr.write("Usage:\n" +
-                         "\t%s encrypt [OpenSSL public key file] [input file]\n" % sys.argv[0] +
-                         "\techo '[OpenSSL public key]' | %s encrypt [input file]\n" % sys.argv[0] +
-                         "\t%s decrypt [input file]\n" % sys.argv[0] +
-                         "\t%s decrypt [OpenSSL private key file] [input file]\n" % sys.argv[0])
-        sys.exit(1)
+    if not EMBEDDED_BINARY_DATA:
+        arg_length = len(sys.argv) - 1  # Subtract 1 for the implicit first argument, the programs name
+        if arg_length > 3 or arg_length < 2:
+            sys.stderr.write("Usage:\n" +
+                             "\t%s [OpenSSL public key file] [input file] [output file]\n" % sys.argv[0] +
+                             "\techo '[OpenSSL public key]' | %s [input file] [output file]\n" % sys.argv[0])
+            sys.exit(1)
 
-    if sys.argv[1] == 'encrypt':
-        if arg_length == 3:
+        # Create a zipfile containing all the encrypted info and the info needed to decrypt
+        if arg_length == 2:
             # The public key was passed to us as a file
-            public = open(os.path.expanduser(sys.argv[2])).read()
-            input = os.path.expanduser(sys.argv[3])
+            public = open(os.path.expanduser(sys.argv[1])).read()
+            input = os.path.expanduser(sys.argv[2])
+            output = os.path.expanduser(sys.argv[3])
         else:
             # Try to get the public key from stdin
             public = sys.stdin.readline()
-            input = os.path.expanduser(sys.argv[2])
+            input = os.path.expanduser(sys.argv[1])
+            output = os.path.expanduser(sys.argv[2])
 
-        decrypt(public, input)
+        bundle = encrypt(public, input)
 
-    elif sys.argv[1] == 'decrypt':
-        pass
+        # Now with the encrypted bundle created, let's open up *this* file and embed it in
+        with open(sys.argv[0], 'r') as this_file:
+            with open(output, 'w') as embedded:
+                for line in this_file:
+                    if line.strip() == 'EMBEDDED_BINARY_DATA = None':
+                        bundle.seek(0)
+                        embedded.write('EMBEDDED_BINARY_DATA = "%s\n' % bundle.read())
+                    else:
+                        embedded.write(line)
+        bundle.close()
