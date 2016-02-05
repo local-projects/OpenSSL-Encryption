@@ -31,7 +31,7 @@ def execute_command(command, stdin=False):
         proc.wait()
     else:
         proc = subprocess.Popen(command.split(), stdout=subprocess.PIPE)
-    value = proc.communicate()[0]
+    value = proc.communicate()[0].strip()
     if proc.returncode:
         sys.stderr.write("Could not execute command: %s" % command)
         sys.exit(1)
@@ -126,7 +126,7 @@ def encrypt(public_info, infile):
     # Encrypt the actual file
     encrypt_file = NamedTemporaryFile(delete=False)
     encrypt_file.write(
-        execute_command("openssl enc -aes-256-cbc -salt -in %s -pass file:%s" % (infile, encrypt_key.name)))
+        execute_command("openssl enc -aes-256-cbc -salt -in %s -pass file:%s" % (infile, key.name)))
     encrypt_file.close()
 
     # Bundle all the needed assets into a zip
