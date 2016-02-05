@@ -1,14 +1,32 @@
+# This whole script taken heavily from https://gist.github.com/thwarted/1024558#file-sshpub-to-rsa
+
 import os
 import sys
 import base64
 import struct
+import subprocess
 from pyasn1.type import univ
 from pyasn1.codec.der import encoder as der_encoder
+from tempfile import NamedTemporaryFile
+
+
+def execute_command(command):
+    """
+    A general purpose helper function for running commands and getting back the value from stdin
+    :param command:
+    :return:
+    """
+    proc = subprocess.Popen(command.split(), stdout=subprocess.PIPE)
+    value = proc.communicate()[0]
+    if proc.returncode:
+        sys.stderr.write("Could not execute command: %s" % command)
+        sys.exit(1)
+    return value
 
 
 def openssl_pub_to_pem(keydata):
     """
-    Converts an OpenSSL public key to a PEM format. Taken from https://gist.github.com/thwarted/1024558#file-sshpub-to-rsa
+    Converts an OpenSSL public key to a PEM format.
     :param keydata: OpenSSL public keydata
     :return: the PEM formatted key data
     """
@@ -46,22 +64,57 @@ def openssl_pub_to_pem(keydata):
     pubkey_seq.setComponentByPosition(0, pubkeyid)
     pubkey_seq.setComponentByPosition(1, bitstring)
 
-    value = "%s\n%s\n%s" % ("-----BEGIN PUBLIC KEY-----",
+    value = "%s\n%s%s" % ("-----BEGIN PUBLIC KEY-----",
                             base64.encodestring(der_encoder.encode(pubkey_seq)),
                             "-----END PUBLIC KEY-----")
 
     return value
 
 
-def decrypt(public, input):
+def decrypt(public, infile):
     """
     Decrypts the input file using the public information
     :param public: String of OpenSSL public key information
-    :param input: File object pointing to the file to encrypt
+    :param infile: Filename of the file to encrypt
     :return:
     """
-    pass
+    keyfields = public.split()
+    if len(keyfields) == 3:
+        # We don't actually need nor want the comment
+        keyfields.pop()
+    if len(keyfields) != 2:
+        sys.stderr.write("Invalid public key format\n")
+        sys.exit(1)
 
+    keyformat, keydata = keyfields
+    if keyformat != "ssh-rsa":
+        sys.stderr.write("Key type does not appear to be ssh-rsa")
+        sys.exit(1)
+
+    pem = NamedTemporaryFile(delete=False)
+    pem.write(openssl_pub_to_pem(keydata))
+    pem.close()
+
+    # Generate random key for encryption
+    key = NamedTemporaryFile(delete=False)
+    key.write(execute_command("openssl rand -base64 32"))
+    key.close()
+
+    # Encrypt the random key
+    encrypt_key = NamedTemporaryFile(delete=False)
+    encrypt_key.write(execute_command("openssl rsautl -encrypt -inkey %s -pubin -in %s" % (pem.name, key.name)))
+    encrypt_key.close()
+
+    # Cleanup unneeded files
+    os.remove(pem.name)
+    os.remove(key.name)
+
+    # Encrypt the actual file
+    encrypt_file = NamedTemporaryFile(delete=False)
+    encrypt_file.write(execute_command("openssl enc -aes-256-cbc -salt -in %s -pass file:%s" % (infile, encrypt_key.name)))
+    encrypt_file.close()
+
+    # Bundle all the needed assets into a zip
 
 if __name__ == "__main__":
 
@@ -78,11 +131,11 @@ if __name__ == "__main__":
         if arg_length == 3:
             # The public key was passed to us as a file
             public = open(os.path.expanduser(sys.argv[2])).read()
-            input = open(os.path.expanduser(sys.argv[3]))
+            input = os.path.expanduser(sys.argv[3])
         else:
             # Try to get the public key from stdin
             public = sys.stdin.readline()
-            input = open(os.path.expanduser(sys.argv[2]))
+            input = os.path.expanduser(sys.argv[2])
 
         decrypt(public, input)
 
